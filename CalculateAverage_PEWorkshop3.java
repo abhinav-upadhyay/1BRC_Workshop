@@ -18,16 +18,16 @@ package dev.morling.onebrc;
 
 import sun.misc.Unsafe;
 
-import java.io.File;
-import java.io.IOException;
+import java.io.*;
 import java.lang.foreign.Arena;
 import java.lang.reflect.Field;
 import java.nio.channels.FileChannel;
 import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
-import java.util.HashMap;
+import java.util.Arrays;
 import java.util.Map;
 import java.util.TreeMap;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class CalculateAverage_PEWorkshop3 {
 
@@ -63,72 +63,67 @@ public class CalculateAverage_PEWorkshop3 {
         }
     };
 
-    private static final Map<String, Row> records = new HashMap<>();
+    private static final Map<String, Row> records = new ConcurrentHashMap<>();
 
-    private static final long SEMICOLON_PATTERN = compilePattern((byte) ';');
-
-    private static long compilePattern(byte byteToFind) {
-        long pattern = byteToFind & 0xFFL;
-        return pattern
-                | (pattern << 8)
-                | (pattern << 16)
-                | (pattern << 24)
-                | (pattern << 32)
-                | (pattern << 40)
-                | (pattern << 48)
-                | (pattern << 56);
+    private static void processLine(byte[] barray, int size, int semiColonIndex) {
+        String name = new String(barray, 0, semiColonIndex);
+        String temperatureStr = new String(barray, semiColonIndex + 1, size - semiColonIndex - 1);
+        float temperature = Float.parseFloat(temperatureStr);
+        records.compute(name, (k, v) -> v == null ? Row.create(temperature) : v.update(temperature));
     }
 
-    private static int firstInstance(long word, long pattern) {
-        long input = word ^ pattern;
-        long tmp = (input & 0x7F7F7F7F7F7F7F7FL) + 0x7F7F7F7F7F7F7F7FL;
-        tmp = ~(tmp | input | 0x7F7F7F7F7F7F7F7FL);
-        return Long.numberOfLeadingZeros(tmp) >>> 3;
-    }
-
-    public static void longToBytes(long l, byte[] barray, int offset) {
-        for (int i = Long.BYTES - 1; i >= 0; i--) {
-            barray[i + offset] = (byte) (l & 0xFF);
-            l >>= Byte.SIZE;
-        }
-    }
-
-    private static void readFile2(long startAddress, long endAddress) {
+    private static void readFile(long startAddress, long endAddress) {
         long currentOffset = startAddress;
         byte[] barray = new byte[512];
         int barrayOffset = 0;
         while (currentOffset < endAddress) {
-            long word = Long.reverseBytes(UNSAFE.getLong(currentOffset));
-            final int semiColonIndex = firstInstance(word, SEMICOLON_PATTERN);
-            currentOffset += semiColonIndex;
-            longToBytes(word, barray, barrayOffset);
-            barrayOffset += semiColonIndex;
-            if (semiColonIndex != Long.BYTES) {
-                // we found semicolon, let's find newline
-                byte b;
-                byte[] temperatureBytes = new byte[8];
-                int tBytesOffset = 0;
-                currentOffset++;
-                while ((b = UNSAFE.getByte(currentOffset++)) != '\n') {
-                    temperatureBytes[tBytesOffset++] = b;
+            byte b;
+            int semiColonIndex = -1;
+            while ((b = UNSAFE.getByte(currentOffset++)) != '\n') {
+                if (b == ';') {
+                    semiColonIndex = barrayOffset;
                 }
-                float temperature = Float.parseFloat(new String(temperatureBytes, 0, tBytesOffset));
-                String name = new String(barray, 0, barrayOffset);
-                records.compute(name, (_, v) -> v == null ? Row.create(temperature) : v.update(temperature));
-                barrayOffset = 0;
+                barray[barrayOffset++] = b;
             }
+            processLine(barray, barrayOffset, semiColonIndex);
+            barrayOffset = 0;
         }
+
     }
 
     public static void main(String[] args) throws IOException {
         String filename = args.length > 0 ? args[0] : FILE_NAME;
-        File f = new File(filename);
-        final long fileSize = f.length();
-        // final MemorySegment segment = FileChannel.open(Paths.get(filename), StandardOpenOption.READ).map(FileChannel.MapMode.READ_ONLY, 0, fileSize, Arena.global());
-        final long startAddress = FileChannel.open(Paths.get(filename), StandardOpenOption.READ).map(FileChannel.MapMode.READ_ONLY, 0, fileSize, Arena.global())
-                .address();
-        long endAddress = startAddress + fileSize;
-        readFile2(startAddress, endAddress);
+        FileChannel fc = FileChannel.open(Paths.get(filename), StandardOpenOption.READ);
+        final long fileSize = fc.size();
+        final long startAddress = fc.map(FileChannel.MapMode.READ_ONLY, 0, fileSize, Arena.global()).address();
+        final long endAddress = startAddress + fileSize;
+        final long[][] segments = findSegments(startAddress, endAddress, fileSize, fileSize > 1024 * 1024 * 1024 ? 6 : 1);
+        Arrays.stream(segments).parallel().forEach(s -> readFile(s[0], s[1]));
         System.out.println(new TreeMap<>(records));
+    }
+
+    private static long[][] findSegments(long startAddress, long endAddress, long size, int segmentCount) {
+        if (segmentCount == 1) {
+            return new long[][]{ { startAddress, endAddress } };
+        }
+        long[][] segments = new long[segmentCount][2];
+        long segmentSize = size / segmentCount + 1;
+        int i = 0;
+        long currentOffset = startAddress;
+        while (currentOffset < endAddress) {
+            segments[i][0] = currentOffset;
+            currentOffset += segmentSize;
+            currentOffset = Math.min(currentOffset, endAddress);
+            if (currentOffset >= endAddress) {
+                segments[i][1] = endAddress;
+                break;
+            }
+            while (UNSAFE.getByte(currentOffset) != '\n') {
+                currentOffset++;
+                // align to newline boundary
+            }
+            segments[i++][1] = currentOffset++;
+        }
+        return segments;
     }
 }
