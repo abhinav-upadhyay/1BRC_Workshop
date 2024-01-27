@@ -29,7 +29,9 @@ import java.util.*;
 public class CalculateAverage_PEWorkshop7 {
 
     /**
-     * Custom hash table. With no resizing and collision checks it saves some time in insertion/updates
+     *  Use byte array to key the Table. 
+     *  If an entry exists in the table, we don't need to create a new String for
+     *  location name. Saves extra allocation, GC and copying of bytes
      */
     private static final String FILE_NAME = "./measurements.txt";
 
