@@ -23,6 +23,9 @@ import java.util.*;
 
 public class CalculateAverage_PEWorkshop1 {
 
+    /**
+     * Most naive implementation. Simply streaming lines using BuffredReader and parsing them
+     */
     private static final String FILE_NAME = "./measurements.txt";
 
     private record Row(float minTemp, float maxTemp, int count, float sum) {

@@ -30,6 +30,9 @@ import java.util.TreeMap;
 
 public class CalculateAverage_PEWorkshop2 {
 
+    /**
+     * Slightly improved version. MMapping the file and then manually finding lines and parsing
+     */
     private static final String FILE_NAME = "./measurements.txt";
 
     private static Unsafe initUnsafe() {

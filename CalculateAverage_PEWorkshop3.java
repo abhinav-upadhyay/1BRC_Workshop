@@ -31,6 +31,10 @@ import java.util.concurrent.ConcurrentHashMap;
 
 public class CalculateAverage_PEWorkshop3 {
 
+    /**
+     * Improvement over MMap version. Using multiple threads to read different parts of the file and processing them
+     * in parallel.
+     */
     private static final String FILE_NAME = "./measurements.txt";
 
     private static Unsafe initUnsafe() {
