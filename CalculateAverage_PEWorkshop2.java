@@ -16,10 +16,13 @@
 
 package dev.morling.onebrc;
 
+import sun.misc.Unsafe;
+
 import java.io.*;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
+import java.lang.reflect.Field;
 import java.nio.channels.FileChannel;
 import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
@@ -31,6 +34,19 @@ import java.util.concurrent.ConcurrentHashMap;
 public class CalculateAverage_PEWorkshop2 {
 
     private static final String FILE_NAME = "./measurements.txt";
+
+    private static Unsafe initUnsafe() {
+        try {
+            final Field theUnsafe = Unsafe.class.getDeclaredField("theUnsafe");
+            theUnsafe.setAccessible(true);
+            return (Unsafe) theUnsafe.get(Unsafe.class);
+        }
+        catch (NoSuchFieldException | IllegalAccessException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    private final static Unsafe UNSAFE = initUnsafe();
 
     private record Row(float minTemp, float maxTemp, int count, float sum) {
         Row update(float temperature) {
@@ -58,14 +74,14 @@ public class CalculateAverage_PEWorkshop2 {
         records.compute(name, (k, v) -> v == null ? Row.create(temperature) : v.update(temperature));
     }
 
-    private static void readFile(MemorySegment segment, long startOffset, long endOffset) {
-        long currentOffset = startOffset;
+    private static void readFile(long startAddress, long endAddress) {
+        long currentOffset = startAddress;
         byte[] barray = new byte[512];
         int barrayOffset = 0;
-        while (currentOffset < endOffset) {
+        while (currentOffset < endAddress) {
             byte b;
             int semiColonIndex = -1;
-            while ((b = segment.getAtIndex(ValueLayout.OfByte.JAVA_BYTE, currentOffset++)) != '\n') {
+            while ((b = UNSAFE.getByte(currentOffset++)) != '\n') {
                 if (b == ';') {
                     semiColonIndex = barrayOffset;
                 }
@@ -81,8 +97,10 @@ public class CalculateAverage_PEWorkshop2 {
         String filename = args.length > 0 ? args[0] : FILE_NAME;
         File f = new File(filename);
         final long fileSize = f.length();
-        final MemorySegment segment = FileChannel.open(Paths.get(filename), StandardOpenOption.READ).map(FileChannel.MapMode.READ_ONLY, 0, fileSize, Arena.global());
-        readFile(segment, 0, fileSize);
+        final long startAddress = FileChannel.open(Paths.get(filename), StandardOpenOption.READ).map(FileChannel.MapMode.READ_ONLY, 0, fileSize, Arena.global())
+                .address();
+        final long endAddress = startAddress + fileSize;
+        readFile(startAddress, endAddress);
         System.out.println(new TreeMap<>(records));
     }
 }
