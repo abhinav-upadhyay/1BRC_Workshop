@@ -20,8 +20,6 @@ import sun.misc.Unsafe;
 
 import java.io.*;
 import java.lang.foreign.Arena;
-import java.lang.foreign.MemorySegment;
-import java.lang.foreign.ValueLayout;
 import java.lang.reflect.Field;
 import java.nio.channels.FileChannel;
 import java.nio.file.Paths;
@@ -29,7 +27,6 @@ import java.nio.file.StandardOpenOption;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.TreeMap;
-import java.util.concurrent.ConcurrentHashMap;
 
 public class CalculateAverage_PEWorkshop2 {
 
@@ -95,10 +92,9 @@ public class CalculateAverage_PEWorkshop2 {
 
     public static void main(String[] args) throws IOException {
         String filename = args.length > 0 ? args[0] : FILE_NAME;
-        File f = new File(filename);
-        final long fileSize = f.length();
-        final long startAddress = FileChannel.open(Paths.get(filename), StandardOpenOption.READ).map(FileChannel.MapMode.READ_ONLY, 0, fileSize, Arena.global())
-                .address();
+        FileChannel fc = FileChannel.open(Paths.get(filename), StandardOpenOption.READ);
+        final long fileSize = fc.size();
+        final long startAddress = fc.map(FileChannel.MapMode.READ_ONLY, 0, fileSize, Arena.global()).address();
         final long endAddress = startAddress + fileSize;
         readFile(startAddress, endAddress);
         System.out.println(new TreeMap<>(records));
