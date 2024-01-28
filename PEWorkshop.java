@@ -29,9 +29,8 @@ import java.util.*;
 public class CalculateAverage_PEWorkshop {
 
     /**
-     *  Use byte array to key the Table. 
-     *  If an entry exists in the table, we don't need to create a new String for
-     *  location name. Saves extra allocation, GC and copying of bytes
+     *  Let's forget separation of concerns. Compute the hash of the location name as we read its bytes
+     *  This totally eliminates the overhead of calling hashCode function when storing in table.
      */
     private static final String FILE_NAME = "./measurements.txt";
 
@@ -53,8 +52,8 @@ public class CalculateAverage_PEWorkshop {
         private static final int TABLE_MASK = TABLE_SIZE - 1;
         Row[] table = new Row[TABLE_SIZE];
 
-        public void put(byte[] nameBytes, int nameArraySize, int temperature) {
-            int index = hashCode(nameBytes, 0, nameArraySize) & TABLE_MASK;
+        public void put(byte[] nameBytes, int nameArraySize, int nameHash, int temperature) {
+            int index = nameHash & TABLE_MASK;
 
             if (table[index] == null) {
                 table[index] = Row.create(new String(nameBytes, 0, nameArraySize), temperature);
@@ -156,9 +155,9 @@ public class CalculateAverage_PEWorkshop {
         return isNegative ? temp * -1 : temp;
     }
 
-    private static void processLine(byte[] nameArray, int nameArraySize, byte[] tempArray, int tempArraySize, Table table) {
+    private static void processLine(byte[] nameArray, int nameArraySize, int nameHash, byte[] tempArray, int tempArraySize, Table table) {
         int temperature = parseTemperature(tempArray, 0, tempArraySize);
-        table.put(nameArray, nameArraySize, temperature);
+        table.put(nameArray, nameArraySize, nameHash, temperature);
     }
 
     private static Table readFile(long startAddress, long endAddress) {
@@ -168,18 +167,20 @@ public class CalculateAverage_PEWorkshop {
         int nameArrayOffset = 0;
         byte[] tempArray = new byte[8];
         int tempArrayOffset = 0;
+        int nameHash = 1;
         while (currentOffset < endAddress) {
             byte b;
-            int semiColonIndex = -1;
             while ((b = UNSAFE.getByte(currentOffset++)) != ';') {
                 nameArray[nameArrayOffset++] = b;
+                nameHash = 31 * nameHash + b;
             }
             while ((b = UNSAFE.getByte(currentOffset++)) != '\n') {
                 tempArray[tempArrayOffset++] = b;
             }
-            processLine(nameArray, nameArrayOffset, tempArray, tempArrayOffset, table);
+            processLine(nameArray, nameArrayOffset, nameHash, tempArray, tempArrayOffset, table);
             nameArrayOffset = 0;
             tempArrayOffset = 0;
+            nameHash = 1;
         }
         return table;
 
