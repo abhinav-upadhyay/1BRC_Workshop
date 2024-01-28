@@ -30,9 +30,8 @@ import java.util.concurrent.ConcurrentHashMap;
 public class CalculateAverage_PEWorkshop {
 
     /**
-     * According to the profile of the version 3, 57% of the time is spent in the ConcurrentHashMap
-     * Mostly because each thread is continuously trying to read/write it. It's better for each
-     * thread to have its own Map which gets merged at the end into a giant Map
+     * Replace float parsing of temperature with hand written integer parsing.
+     * We still spend 5% time in this path but less than the 22% that was before.
      */
     private static final String FILE_NAME = "./measurements.txt";
 
@@ -49,38 +48,58 @@ public class CalculateAverage_PEWorkshop {
 
     private final static Unsafe UNSAFE = initUnsafe();
 
-    private record Row(float minTemp, float maxTemp, int count, float sum) {
-        Row update(float temperature) {
-            float minTemp = Float.min(this.minTemp, temperature);
-            float maxTemp = Float.max(this.maxTemp, temperature);
+    private record Row(int minTemp, int maxTemp, int count, int sum) {
+        Row update(int temperature) {
+            int minTemp = Integer.min(this.minTemp, temperature);
+            int maxTemp = Integer.max(this.maxTemp, temperature);
             return new Row(minTemp, maxTemp, this.count + 1, this.sum  +temperature);
         }
 
-        public static Row create(float temperature) {
+        public static Row create(int temperature) {
             return new Row(temperature, temperature, 1, temperature);
         }
 
         @Override
         public String toString() {
-            return String.format("%.1f/%.1f/%.1f", (this.minTemp), (this.sum/count), (maxTemp));
+            return String.format("%.1f/%.1f/%.1f", this.minTemp/10.0, this.sum/(count * 10.0), maxTemp/10.0);
         }
 
         public Row update(Row value) {
-            float minTemp = Float.min(this.minTemp, value.minTemp);
-            float maxTemp = Float.max(this.maxTemp, value.maxTemp);
+            int minTemp = Integer.min(this.minTemp, value.minTemp);
+            int maxTemp = Integer.max(this.maxTemp, value.maxTemp);
             int count = this.count + value.count;
-            float sum = this.sum + value.sum;
+            int sum = this.sum + value.sum;
             return new Row(minTemp, maxTemp, count, sum);
         }
-    };
+    }
 
-    private static final Map<String, Row> records = new ConcurrentHashMap<>();
+    private static int parseTemperature(byte[] array, int start, int size) {
+        byte b = array[start++];
+        int scale = 1;
+        boolean isNegative = false;
+        int temp = 0;
+        if (b == '-') {
+            isNegative = true;
+        }
+        else {
+            temp += b - '0';
+            scale = 10;
+        }
+        for (int i = start; i < size; i++) {
+            b = array[i];
+            if (b == '.') {
+                continue;
+            }
+            temp = temp * scale + b - '0';
+            scale = 10;
+        }
+        return isNegative ? temp * -1 : temp;
+    }
 
     private static void processLine(byte[] barray, int size, int semiColonIndex, Map<String, Row> rowMap) {
         String name = new String(barray, 0, semiColonIndex);
-        String temperatureStr = new String(barray, semiColonIndex + 1, size - semiColonIndex - 1);
-        float temperature = Float.parseFloat(temperatureStr);
-        rowMap.compute(name, (k, v) -> v == null ? Row.create(temperature) : v.update(temperature));
+        int temperature = parseTemperature(barray, semiColonIndex + 1, size);
+        rowMap.compute(name, (_, v) -> v == null ? Row.create(temperature) : v.update(temperature));
     }
 
     private static Map<String, Row> readFile(long startAddress, long endAddress) {
