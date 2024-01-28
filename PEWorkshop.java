@@ -18,22 +18,21 @@ package dev.morling.onebrc;
 
 import sun.misc.Unsafe;
 
-import java.io.*;
+import java.io.IOException;
 import java.lang.foreign.Arena;
 import java.lang.reflect.Field;
 import java.nio.channels.FileChannel;
 import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
-import java.util.Arrays;
-import java.util.Map;
-import java.util.TreeMap;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
 public class CalculateAverage_PEWorkshop {
 
     /**
-     * Improvement over MMap version. Using multiple threads to read different parts of the file and processing them
-     * in parallel.
+     * According to the profile of the version 3, 57% of the time is spent in the ConcurrentHashMap
+     * Mostly because each thread is continuously trying to read/write it. It's better for each
+     * thread to have its own Map which gets merged at the end into a giant Map
      */
     private static final String FILE_NAME = "./measurements.txt";
 
@@ -65,18 +64,27 @@ public class CalculateAverage_PEWorkshop {
         public String toString() {
             return String.format("%.1f/%.1f/%.1f", (this.minTemp), (this.sum/count), (maxTemp));
         }
+
+        public Row update(Row value) {
+            float minTemp = Float.min(this.minTemp, value.minTemp);
+            float maxTemp = Float.max(this.maxTemp, value.maxTemp);
+            int count = this.count + value.count;
+            float sum = this.sum + value.sum;
+            return new Row(minTemp, maxTemp, count, sum);
+        }
     };
 
     private static final Map<String, Row> records = new ConcurrentHashMap<>();
 
-    private static void processLine(byte[] barray, int size, int semiColonIndex) {
+    private static void processLine(byte[] barray, int size, int semiColonIndex, Map<String, Row> rowMap) {
         String name = new String(barray, 0, semiColonIndex);
         String temperatureStr = new String(barray, semiColonIndex + 1, size - semiColonIndex - 1);
         float temperature = Float.parseFloat(temperatureStr);
-        records.compute(name, (k, v) -> v == null ? Row.create(temperature) : v.update(temperature));
+        rowMap.compute(name, (k, v) -> v == null ? Row.create(temperature) : v.update(temperature));
     }
 
-    private static void readFile(long startAddress, long endAddress) {
+    private static Map<String, Row> readFile(long startAddress, long endAddress) {
+        Map<String, Row> rowMap = new HashMap<>(10000);
         long currentOffset = startAddress;
         byte[] barray = new byte[512];
         int barrayOffset = 0;
@@ -89,9 +97,10 @@ public class CalculateAverage_PEWorkshop {
                 }
                 barray[barrayOffset++] = b;
             }
-            processLine(barray, barrayOffset, semiColonIndex);
+            processLine(barray, barrayOffset, semiColonIndex, rowMap);
             barrayOffset = 0;
         }
+        return rowMap;
 
     }
 
@@ -102,8 +111,15 @@ public class CalculateAverage_PEWorkshop {
         final long startAddress = fc.map(FileChannel.MapMode.READ_ONLY, 0, fileSize, Arena.global()).address();
         final long endAddress = startAddress + fileSize;
         final long[][] segments = findSegments(startAddress, endAddress, fileSize, fileSize > 1024 * 1024 * 1024 ? 6 : 1);
-        Arrays.stream(segments).parallel().forEach(s -> readFile(s[0], s[1]));
-        System.out.println(new TreeMap<>(records));
+        final List<Map<String, Row>> collect = Arrays.stream(segments).parallel().map(s -> readFile(s[0], s[1])).toList();
+        Map<String, Row> finalMap = new TreeMap<>(collect.getFirst());
+        for (int i = 1; i < collect.size(); i++) {
+            final Map<String, Row> rowMap = collect.get(i);
+            for (Map.Entry<String, Row> e : rowMap.entrySet()) {
+                finalMap.compute(e.getKey(), (_, v) -> v == null ? v : v.update(e.getValue()));
+            }
+        }
+        System.out.println(finalMap);
     }
 
     private static long[][] findSegments(long startAddress, long endAddress, long size, int segmentCount) {
