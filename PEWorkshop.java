@@ -26,10 +26,12 @@ import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
 import java.util.*;
 
-public class CalculateAverage_PEWorkshop6 {
+public class CalculateAverage_PEWorkshop {
 
     /**
-     * Custom hash table. With no resizing and collision checks it saves some time in insertion/updates
+     *  Use byte array to key the Table. 
+     *  If an entry exists in the table, we don't need to create a new String for
+     *  location name. Saves extra allocation, GC and copying of bytes
      */
     private static final String FILE_NAME = "./measurements.txt";
 
@@ -51,13 +53,23 @@ public class CalculateAverage_PEWorkshop6 {
         private static final int TABLE_MASK = TABLE_SIZE - 1;
         Row[] table = new Row[TABLE_SIZE];
 
-        public void put(String name, int temperature) {
-            int index = name.hashCode() & TABLE_MASK;
+        public void put(byte[] nameBytes, int nameArraySize, int temperature) {
+            int index = hashCode(nameBytes, 0, nameArraySize) & TABLE_MASK;
+
             if (table[index] == null) {
-                table[index] = Row.create(name, temperature);
+                table[index] = Row.create(new String(nameBytes, 0, nameArraySize), temperature);
                 return;
             }
             table[index].update(temperature);
+        }
+
+        private static int hashCode(byte[] a, int fromIndex, int length) {
+            int result = 1;
+            int end = fromIndex + length;
+            for (int i = fromIndex; i < end; i++) {
+                result = 31 * result + a[i];
+            }
+            return result;
         }
 
     }
@@ -144,28 +156,30 @@ public class CalculateAverage_PEWorkshop6 {
         return isNegative ? temp * -1 : temp;
     }
 
-    private static void processLine(byte[] barray, int size, int semiColonIndex, Table table) {
-        String name = new String(barray, 0, semiColonIndex);
-        int temperature = parseTemperature(barray, semiColonIndex + 1, size);
-        table.put(name, temperature);
+    private static void processLine(byte[] nameArray, int nameArraySize, byte[] tempArray, int tempArraySize, Table table) {
+        int temperature = parseTemperature(tempArray, 0, tempArraySize);
+        table.put(nameArray, nameArraySize, temperature);
     }
 
     private static Table readFile(long startAddress, long endAddress) {
         Table table = new Table();
         long currentOffset = startAddress;
-        byte[] barray = new byte[512];
-        int barrayOffset = 0;
+        byte[] nameArray = new byte[512];
+        int nameArrayOffset = 0;
+        byte[] tempArray = new byte[8];
+        int tempArrayOffset = 0;
         while (currentOffset < endAddress) {
             byte b;
             int semiColonIndex = -1;
-            while ((b = UNSAFE.getByte(currentOffset++)) != '\n') {
-                if (b == ';') {
-                    semiColonIndex = barrayOffset;
-                }
-                barray[barrayOffset++] = b;
+            while ((b = UNSAFE.getByte(currentOffset++)) != ';') {
+                nameArray[nameArrayOffset++] = b;
             }
-            processLine(barray, barrayOffset, semiColonIndex, table);
-            barrayOffset = 0;
+            while ((b = UNSAFE.getByte(currentOffset++)) != '\n') {
+                tempArray[tempArrayOffset++] = b;
+            }
+            processLine(nameArray, nameArrayOffset, tempArray, tempArrayOffset, table);
+            nameArrayOffset = 0;
+            tempArrayOffset = 0;
         }
         return table;
 
