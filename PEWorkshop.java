@@ -24,14 +24,16 @@ import java.lang.reflect.Field;
 import java.nio.channels.FileChannel;
 import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
-import java.util.HashMap;
+import java.util.Arrays;
 import java.util.Map;
 import java.util.TreeMap;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class CalculateAverage_PEWorkshop {
 
     /**
-     * Slightly improved version. MMapping the file and then manually finding lines and parsing
+     * Improvement over MMap version. Using multiple threads to read different parts of the file and processing them
+     * in parallel.
      */
     private static final String FILE_NAME = "./measurements.txt";
 
@@ -65,7 +67,7 @@ public class CalculateAverage_PEWorkshop {
         }
     };
 
-    private static final Map<String, Row> records = new HashMap<>();
+    private static final Map<String, Row> records = new ConcurrentHashMap<>();
 
     private static void processLine(byte[] barray, int size, int semiColonIndex) {
         String name = new String(barray, 0, semiColonIndex);
@@ -99,7 +101,33 @@ public class CalculateAverage_PEWorkshop {
         final long fileSize = fc.size();
         final long startAddress = fc.map(FileChannel.MapMode.READ_ONLY, 0, fileSize, Arena.global()).address();
         final long endAddress = startAddress + fileSize;
-        readFile(startAddress, endAddress);
+        final long[][] segments = findSegments(startAddress, endAddress, fileSize, fileSize > 1024 * 1024 * 1024 ? 6 : 1);
+        Arrays.stream(segments).parallel().forEach(s -> readFile(s[0], s[1]));
         System.out.println(new TreeMap<>(records));
+    }
+
+    private static long[][] findSegments(long startAddress, long endAddress, long size, int segmentCount) {
+        if (segmentCount == 1) {
+            return new long[][]{ { startAddress, endAddress } };
+        }
+        long[][] segments = new long[segmentCount][2];
+        long segmentSize = size / segmentCount + 1;
+        int i = 0;
+        long currentOffset = startAddress;
+        while (currentOffset < endAddress) {
+            segments[i][0] = currentOffset;
+            currentOffset += segmentSize;
+            currentOffset = Math.min(currentOffset, endAddress);
+            if (currentOffset >= endAddress) {
+                segments[i][1] = endAddress;
+                break;
+            }
+            while (UNSAFE.getByte(currentOffset) != '\n') {
+                currentOffset++;
+                // align to newline boundary
+            }
+            segments[i++][1] = currentOffset++;
+        }
+        return segments;
     }
 }
