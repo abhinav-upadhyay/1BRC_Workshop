@@ -61,16 +61,6 @@ public class CalculateAverage_PEWorkshop {
             }
             table[index].update(temperature);
         }
-
-        private static int hashCode(byte[] a, int fromIndex, int length) {
-            int result = 1;
-            int end = fromIndex + length;
-            for (int i = fromIndex; i < end; i++) {
-                result = 31 * result + a[i];
-            }
-            return result;
-        }
-
     }
 
     private static final class Row {
@@ -132,31 +122,7 @@ public class CalculateAverage_PEWorkshop {
         }
     }
 
-    private static int parseTemperature(byte[] array, int start, int size) {
-        byte b = array[start++];
-        int scale = 1;
-        boolean isNegative = false;
-        int temp = 0;
-        if (b == '-') {
-            isNegative = true;
-        }
-        else {
-            temp += b - '0';
-            scale = 10;
-        }
-        for (int i = start; i < size; i++) {
-            b = array[i];
-            if (b == '.') {
-                continue;
-            }
-            temp = temp * scale + b - '0';
-            scale = 10;
-        }
-        return isNegative ? temp * -1 : temp;
-    }
-
-    private static void processLine(byte[] nameArray, int nameArraySize, int nameHash, byte[] tempArray, int tempArraySize, Table table) {
-        int temperature = parseTemperature(tempArray, 0, tempArraySize);
+    private static void processLine(byte[] nameArray, int nameArraySize, int nameHash, int temperature, Table table) {
         table.put(nameArray, nameArraySize, nameHash, temperature);
     }
 
@@ -165,8 +131,6 @@ public class CalculateAverage_PEWorkshop {
         long currentOffset = startAddress;
         byte[] nameArray = new byte[512];
         int nameArrayOffset = 0;
-        byte[] tempArray = new byte[8];
-        int tempArrayOffset = 0;
         int nameHash = 1;
         while (currentOffset < endAddress) {
             byte b;
@@ -174,12 +138,28 @@ public class CalculateAverage_PEWorkshop {
                 nameArray[nameArrayOffset++] = b;
                 nameHash = 31 * nameHash + b;
             }
-            while ((b = UNSAFE.getByte(currentOffset++)) != '\n') {
-                tempArray[tempArrayOffset++] = b;
+
+            int temperature = 0;
+            int scale = 1;
+            int isNegative = 1;
+            b = UNSAFE.getByte(currentOffset++);
+            if (b == '-') {
+                isNegative = -1;
             }
-            processLine(nameArray, nameArrayOffset, nameHash, tempArray, tempArrayOffset, table);
+            else {
+                temperature = b - '0';
+                scale = 10;
+            }
+            while ((b = UNSAFE.getByte(currentOffset++)) != '\n') {
+                if (b == '.') {
+                    continue;
+                }
+                temperature = temperature * scale + b - '0';
+                scale = 10;
+            }
+            temperature *= isNegative;
+            processLine(nameArray, nameArrayOffset, nameHash, temperature, table);
             nameArrayOffset = 0;
-            tempArrayOffset = 0;
             nameHash = 1;
         }
         return table;
