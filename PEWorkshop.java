@@ -25,13 +25,11 @@ import java.nio.channels.FileChannel;
 import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
 
-public class CalculateAverage_PEWorkshop {
+public class CalculateAverage_PEWorkshop6 {
 
     /**
-     * Replace float parsing of temperature with hand written integer parsing.
-     * We still spend 5% time in this path but less than the 22% that was before.
+     * Custom hash table. With no resizing and collision checks it saves some time in insertion/updates
      */
     private static final String FILE_NAME = "./measurements.txt";
 
@@ -48,28 +46,78 @@ public class CalculateAverage_PEWorkshop {
 
     private final static Unsafe UNSAFE = initUnsafe();
 
-    private record Row(int minTemp, int maxTemp, int count, int sum) {
-        Row update(int temperature) {
-            int minTemp = Integer.min(this.minTemp, temperature);
-            int maxTemp = Integer.max(this.maxTemp, temperature);
-            return new Row(minTemp, maxTemp, this.count + 1, this.sum  +temperature);
+    private static class Table {
+        private static final int TABLE_SIZE = 1 << 21; // collisions with table smaller than this. Need a better hash function
+        private static final int TABLE_MASK = TABLE_SIZE - 1;
+        Row[] table = new Row[TABLE_SIZE];
+
+        public void put(String name, int temperature) {
+            int index = name.hashCode() & TABLE_MASK;
+            if (table[index] == null) {
+                table[index] = Row.create(name, temperature);
+                return;
+            }
+            table[index].update(temperature);
         }
 
-        public static Row create(int temperature) {
-            return new Row(temperature, temperature, 1, temperature);
+    }
+
+    private static final class Row {
+        private final String name;
+        private int minTemp;
+        private int maxTemp;
+        private int count;
+        private int sum;
+
+        private Row(String name, int minTemp, int maxTemp, int count, int sum) {
+            this.name = name;
+            this.minTemp = minTemp;
+            this.maxTemp = maxTemp;
+            this.count = count;
+            this.sum = sum;
+        }
+
+        void update(int temperature) {
+            this.minTemp = Integer.min(this.minTemp, temperature);
+            this.maxTemp = Integer.max(this.maxTemp, temperature);
+            this.count++;
+            this.sum += temperature;
+        }
+
+        public static Row create(String name, int temperature) {
+            return new Row(name, temperature, temperature, 1, temperature);
         }
 
         @Override
         public String toString() {
-            return String.format("%.1f/%.1f/%.1f", this.minTemp/10.0, this.sum/(count * 10.0), maxTemp/10.0);
+            return String.format("%.1f/%.1f/%.1f", this.minTemp / 10.0, this.sum / (count * 10.0), maxTemp / 10.0);
         }
 
         public Row update(Row value) {
-            int minTemp = Integer.min(this.minTemp, value.minTemp);
-            int maxTemp = Integer.max(this.maxTemp, value.maxTemp);
-            int count = this.count + value.count;
-            int sum = this.sum + value.sum;
-            return new Row(minTemp, maxTemp, count, sum);
+            this.minTemp = Integer.min(this.minTemp, value.minTemp);
+            this.maxTemp = Integer.max(this.maxTemp, value.maxTemp);
+            this.count += value.count;
+            this.sum += value.sum;
+            return this;
+        }
+
+        @Override
+        public boolean equals(Object obj) {
+            if (obj == this)
+                return true;
+            if (obj == null || obj.getClass() != this.getClass())
+                return false;
+            var that = (Row) obj;
+            return Objects.equals(this.name, that.name) &&
+                    this.minTemp == that.minTemp &&
+                    this.maxTemp == that.maxTemp &&
+                    this.count == that.count &&
+                    this.sum == that.sum;
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(name, minTemp, maxTemp, count, sum);
         }
     }
 
@@ -96,14 +144,14 @@ public class CalculateAverage_PEWorkshop {
         return isNegative ? temp * -1 : temp;
     }
 
-    private static void processLine(byte[] barray, int size, int semiColonIndex, Map<String, Row> rowMap) {
+    private static void processLine(byte[] barray, int size, int semiColonIndex, Table table) {
         String name = new String(barray, 0, semiColonIndex);
         int temperature = parseTemperature(barray, semiColonIndex + 1, size);
-        rowMap.compute(name, (_, v) -> v == null ? Row.create(temperature) : v.update(temperature));
+        table.put(name, temperature);
     }
 
-    private static Map<String, Row> readFile(long startAddress, long endAddress) {
-        Map<String, Row> rowMap = new HashMap<>(10000);
+    private static Table readFile(long startAddress, long endAddress) {
+        Table table = new Table();
         long currentOffset = startAddress;
         byte[] barray = new byte[512];
         int barrayOffset = 0;
@@ -116,10 +164,10 @@ public class CalculateAverage_PEWorkshop {
                 }
                 barray[barrayOffset++] = b;
             }
-            processLine(barray, barrayOffset, semiColonIndex, rowMap);
+            processLine(barray, barrayOffset, semiColonIndex, table);
             barrayOffset = 0;
         }
-        return rowMap;
+        return table;
 
     }
 
@@ -130,12 +178,15 @@ public class CalculateAverage_PEWorkshop {
         final long startAddress = fc.map(FileChannel.MapMode.READ_ONLY, 0, fileSize, Arena.global()).address();
         final long endAddress = startAddress + fileSize;
         final long[][] segments = findSegments(startAddress, endAddress, fileSize, fileSize > 1024 * 1024 * 1024 ? 6 : 1);
-        final List<Map<String, Row>> collect = Arrays.stream(segments).parallel().map(s -> readFile(s[0], s[1])).toList();
-        Map<String, Row> finalMap = new TreeMap<>(collect.getFirst());
-        for (int i = 1; i < collect.size(); i++) {
-            final Map<String, Row> rowMap = collect.get(i);
-            for (Map.Entry<String, Row> e : rowMap.entrySet()) {
-                finalMap.compute(e.getKey(), (_, v) -> v == null ? v : v.update(e.getValue()));
+        final List<Table> collect = Arrays.stream(segments).parallel().map(s -> readFile(s[0], s[1])).toList();
+        Map<String, Row> finalMap = new TreeMap<>();
+        for (final Table t : collect) {
+            for (int j = 0; j < Table.TABLE_SIZE; j++) {
+                final Row row = t.table[j];
+                if (row == null) {
+                    continue;
+                }
+                finalMap.compute(row.name, (_, v) -> v == null ? row : v.update(row));
             }
         }
         System.out.println(finalMap);
