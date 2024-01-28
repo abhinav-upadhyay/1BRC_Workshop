@@ -29,8 +29,13 @@ import java.util.*;
 public class CalculateAverage_PEWorkshop {
 
     /**
-     *  Let's forget separation of concerns. Compute the hash of the location name as we read its bytes
-     *  This totally eliminates the overhead of calling hashCode function when storing in table.
+     *  Use SWAR to find semi colons 8 bytes at a time.
+     *
+     *  This makes hashing of the location name difficult because hashing longs doesn't lead
+     *  to as good hash values as hashing individual bytes
+     *
+     *  I am not an expert on hashing. Taking Cliff Click's hash functions to hash the long values
+     *  Also, reusing his reprobing strategy and reducing the hash table size to just 16k
      */
     private static final String FILE_NAME = "./measurements.txt";
 
@@ -47,20 +52,67 @@ public class CalculateAverage_PEWorkshop {
 
     private final static Unsafe UNSAFE = initUnsafe();
 
+    public static final long HASSEMI = 0x3B3B3B3B3B3B3B3BL;
+
+    static long has0(long x) {
+        return (x - 0x0101010101010101L) & (~x) & 0x8080808080808080L;
+    }
+
     private static class Table {
-        private static final int TABLE_SIZE = 1 << 21; // collisions with table smaller than this. Need a better hash function
+        private static final int TABLE_SIZE = 0x4000; // collisions with table smaller than this. Need a better hash function
         private static final int TABLE_MASK = TABLE_SIZE - 1;
         Row[] table = new Row[TABLE_SIZE];
 
-        public void put(byte[] nameBytes, int nameArraySize, int nameHash, int temperature) {
-            int index = nameHash & TABLE_MASK;
-
-            if (table[index] == null) {
-                table[index] = Row.create(new String(nameBytes, 0, nameArraySize), temperature);
+        public void put(long cityStartOffset, long nameHash, int temperature) {
+            final int uhash = (int) uhash(nameHash);
+            int index = hash_hash(uhash); // dropped the last 4 bytes
+            Row row = table[index];
+            if (row == null) {
+                byte b;
+                byte[] array = new byte[256];
+                int i = 0;
+                while ((b = UNSAFE.getByte(cityStartOffset++)) != ';') {
+                    array[i++] = b;
+                }
+                table[index] = Row.create(new String(array, 0, i), temperature, uhash);
                 return;
             }
-            table[index].update(temperature);
+
+            while (row.hash != uhash) {
+                index = reprobe(index, uhash);
+                row = table[index];
+                if (row == null) {
+                    byte b;
+                    byte[] array = new byte[256];
+                    int i = 0;
+                    while ((b = UNSAFE.getByte(cityStartOffset++)) != ';') {
+                        array[i++] = b;
+                    }
+                    table[index] = Row.create(new String(array, 0, i), temperature, uhash);
+                    return;
+                }
+            }
+            row.update(temperature);
         }
+
+        private static long uhash(long n8) {
+            return n8 ^ (n8 >> 29);
+        }
+
+        private static int hash_hash(int uhash) {
+            // Index in small table
+            int ihash = uhash;
+            ihash = ihash ^ (ihash >> 17);
+            ihash = ihash + 29 * uhash;
+            ihash &= TABLE_MASK;
+            return ihash;
+        }
+
+        private static int reprobe(int ihash, int uhash) {
+            // return (ihash + (uhash | 1)) & TABLE_MASK;
+            return (ihash + (uhash)) & TABLE_MASK;
+        }
+
     }
 
     private static final class Row {
@@ -70,12 +122,15 @@ public class CalculateAverage_PEWorkshop {
         private int count;
         private int sum;
 
-        private Row(String name, int minTemp, int maxTemp, int count, int sum) {
+        private final int hash;
+
+        private Row(String name, int minTemp, int maxTemp, int count, int sum, int hash) {
             this.name = name;
             this.minTemp = minTemp;
             this.maxTemp = maxTemp;
             this.count = count;
             this.sum = sum;
+            this.hash = hash;
         }
 
         void update(int temperature) {
@@ -85,8 +140,8 @@ public class CalculateAverage_PEWorkshop {
             this.sum += temperature;
         }
 
-        public static Row create(String name, int temperature) {
-            return new Row(name, temperature, temperature, 1, temperature);
+        public static Row create(String name, int temperature, int hash) {
+            return new Row(name, temperature, temperature, 1, temperature, hash);
         }
 
         @Override
@@ -122,27 +177,36 @@ public class CalculateAverage_PEWorkshop {
         }
     }
 
-    private static void processLine(byte[] nameArray, int nameArraySize, int nameHash, int temperature, Table table) {
-        table.put(nameArray, nameArraySize, nameHash, temperature);
+    private static void processLine(long cityStartOffset, long nameHash, int temperature, Table table) {
+        table.put(cityStartOffset, nameHash, temperature);
     }
 
     private static Table readFile(long startAddress, long endAddress) {
         Table table = new Table();
         long currentOffset = startAddress;
-        byte[] nameArray = new byte[512];
-        int nameArrayOffset = 0;
-        int nameHash = 1;
+        long nameHash = 1;
         while (currentOffset < endAddress) {
-            byte b;
-            while ((b = UNSAFE.getByte(currentOffset++)) != ';') {
-                nameArray[nameArrayOffset++] = b;
-                nameHash = 31 * nameHash + b;
+            long cityStart = currentOffset;
+            long word = UNSAFE.getLong(currentOffset);
+            long hasSemi = has0(word ^ HASSEMI);
+            while (hasSemi == 0) {
+                currentOffset += 8;
+                nameHash ^= word;
+                word = UNSAFE.getLong(currentOffset);
+                hasSemi = has0(word ^ HASSEMI);
             }
-
+            int trailingZeros = Long.numberOfTrailingZeros(hasSemi);
+            int semiColonIndex = trailingZeros >> 3;
+            if (trailingZeros >= 8) {
+                int nonZeroBits = 64 - trailingZeros;
+                nameHash ^= ((word << nonZeroBits) >> nonZeroBits);
+                currentOffset += semiColonIndex;
+            }
+            currentOffset++; // skip ;
             int temperature = 0;
             int scale = 1;
             int isNegative = 1;
-            b = UNSAFE.getByte(currentOffset++);
+            byte b = UNSAFE.getByte(currentOffset++);
             if (b == '-') {
                 isNegative = -1;
             }
@@ -158,8 +222,7 @@ public class CalculateAverage_PEWorkshop {
                 scale = 10;
             }
             temperature *= isNegative;
-            processLine(nameArray, nameArrayOffset, nameHash, temperature, table);
-            nameArrayOffset = 0;
+            processLine(cityStart, nameHash, temperature, table);
             nameHash = 1;
         }
         return table;
